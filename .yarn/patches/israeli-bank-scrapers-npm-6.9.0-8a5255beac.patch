@@ -1,0 +1,27 @@
+diff --git a/lib/scrapers/visa-cal.js b/lib/scrapers/visa-cal.js
+index c4eb62bb2a9d3ec9d7336647b63667da384f7d05..a98bbecc8dee1b98235a2d8efe1850938ebe7e51 100644
+--- a/lib/scrapers/visa-cal.js
++++ b/lib/scrapers/visa-cal.js
+@@ -373,7 +373,21 @@ class VisaCalScraper extends _baseScraperWithBrowser.BaseScraperWithBrowser {
+     debug(`fetch transactions starting ${startMoment.format()}`);
+     const [cards, xSiteId, Authorization] = await Promise.all([this.getCards(), this.getXSiteId(), this.getAuthorizationHeader()]);
+     const futureMonthsToScrape = this.options.futureMonthsToScrape ?? 1;
+-    const accounts = await Promise.all(cards.map(card => this.fetchCardData(card, startMoment, startDate, futureMonthsToScrape, Authorization, xSiteId)));
++    const cardResults = await Promise.allSettled(cards.map(card => this.fetchCardData(card, startMoment, startDate, futureMonthsToScrape, Authorization, xSiteId)));
++    const accounts = [];
++    const failures = [];
++    cardResults.forEach((result, index) => {
++      if (result.status === 'fulfilled') {
++        accounts.push(result.value);
++        return;
++      }
++      failures.push(result.reason);
++      const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
++      console.warn(`Visa Cal: skipping card ${cards[index].last4Digits} after a card-specific scrape failure: ${message}`);
++    });
++    if (accounts.length === 0 && failures.length > 0) {
++      throw failures[0];
++    }
+     debug('return the scraped accounts');
+     debug(JSON.stringify(accounts, null, 2));
+     return {

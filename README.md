@@ -15,8 +15,8 @@ This project provides an importer from Israeli banks (via [israeli-bank-scrapers
 2. **Prevents duplicate transactions**  
    Uses Actual’s [`imported_id`](https://actualbudget.org/docs/api/reference/#transactions) logic.
 
-3. **Automatic Account Creation**  
-   If the bank account does not exist in Actual, it will be created automatically.
+3. **Destination Validation**
+   Fails before scraping if a configured Actual destination account does not exist.
 
 4. **Reconciliation**  
    Optional reconciliation to adjust account balances automatically.
@@ -68,6 +68,14 @@ fails early with a clear mismatch message that includes both versions.
 
 The application configuration is defined using JSON and validated against a schema.  
 The main configuration file is `config.json`.
+
+`CONFIG_PATH` can point to a settings file in another location. If
+`CREDENTIALS_PATH` is set, that JSON file is deep-merged over the settings at
+startup. This lets credentials remain in a separate, uncommitted file. For a
+write-free validation run, set `DRY_RUN=true`; the importer will scrape and
+verify target mappings but will not create payees, import transactions, or
+reconcile balances. Startup also fails if a configured `actualAccountId` does
+not exist in the downloaded budget.
 
 The configuration has **two independent top-level sections**:
 1. `actual` – Configures the Actual Budget connection.
@@ -160,7 +168,19 @@ the `otpLongTermToken` flow rather than a runtime callback like
 - `chrome-data` persists Chromium session data and helps avoid repeated OTP prompts after an interactive login.
 - `SHOW_BROWSER=true` is only for interactive debugging. It launches Chromium in the container process, but this project does not expose a built-in web UI or remote desktop for that browser.
 - On a headless host, the usual pattern is to keep `chrome-data` persistent and only bring up a graphical environment when you need to refresh a bank session manually.
-- The importer currently asks bank scrapers for the last 2 years of data.
+- `SCRAPE_DAYS` controls how far back each scrape starts (default: `30`).
+- `TIMEOUT` is the browser navigation timeout in minutes (default: `15`).
+- `FAILURE_SCREENSHOT_PATH` saves a screenshot when a scrape fails. Mount its
+  parent directory if you want the screenshot available outside the container.
+- `CHROME_NO_SANDBOX=true` adds Chromium's no-sandbox flags. Use it only where
+  the container runtime cannot provide Chrome's namespace sandbox. The Docker
+  image uses Debian's native multi-architecture Chromium, avoiding emulation on
+  Apple Silicon.
+- This build uses the upstream `eshaham/israeli-bank-scrapers` package, pinned
+  to version `6.9.0`.
+- A repository-managed Yarn patch isolates Visa Cal card failures: successful
+  cards continue, failed card endings are logged, and the run fails if every
+  discovered card fails.
 
 ---
 
