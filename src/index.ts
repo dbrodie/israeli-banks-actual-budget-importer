@@ -4,26 +4,36 @@
 /* eslint-disable no-await-in-loop */
 
 import process from 'node:process';
-import {type CompanyTypes} from '@tomerh2001/israeli-bank-scrapers';
+import {type CompanyTypes} from 'israeli-bank-scrapers';
 import actual from '@actual-app/api';
 import Queue from 'p-queue';
 import moment from 'moment';
 import cron, {type ScheduledTask, validate} from 'node-cron';
 import cronstrue from 'cronstrue';
 import stdout from 'mute-stdout';
-import config from '../config.json' assert {type: 'json'};
 import packageJson from '../package.json' assert {type: 'json'};
 import type {Config, ConfigBank} from './config.d.ts';
 import type {ScrapeTransactionsContext} from './importer.types.ts';
 import {scrapeAndImportTransactions} from './importer.ts';
+import {loadConfig} from './config.loader.ts';
 
 let scheduledTask: ScheduledTask;
-const importerConfig = config as unknown as Config;
+const importerConfig = loadConfig();
 const bundledActualApiVersion = packageJson.dependencies?.['@actual-app/api'] ?? 'unknown';
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const actualInitConfig: Config['actual']['init'] = importerConfig.actual.init;
 const actualBudgetConfig: Config['actual']['budget'] = importerConfig.actual.budget;
 const configuredBanks = Object.entries(importerConfig.banks) as Array<[CompanyTypes, ConfigBank]>;
+
+function configuredActualAccountIds() {
+	return configuredBanks.flatMap(([, bank]) => {
+		if (Array.isArray(bank.targets) && bank.targets.length > 0) {
+			return bank.targets.map(target => target.actualAccountId);
+		}
+
+		return bank.actualAccountId ? [bank.actualAccountId] : [];
+	});
+}
 
 function formatActualVersionMismatch(serverVersion: string) {
 	return [
@@ -98,6 +108,13 @@ async function run() {
 		throw error;
 	}
 
+	const actualAccounts = await actual.getAccounts();
+	const actualAccountIds = new Set(actualAccounts.map(account => account.id));
+	const missingAccountIds = configuredActualAccountIds().filter(id => !actualAccountIds.has(id));
+	if (missingAccountIds.length > 0) {
+		throw new Error(`Configured Actual destination accounts do not exist: ${missingAccountIds.join(', ')}`);
+	}
+
 	stdout.unmute();
 
 	for (const [companyId, bank] of configuredBanks) {
@@ -132,6 +149,7 @@ async function safeRun() {
 		await run();
 	} catch (error) {
 		console.error('Error running scraper:', error);
+		process.exitCode = 1;
 	} finally {
 		if (scheduledTask) {
 			printNextRunTime();
@@ -163,5 +181,5 @@ if (process.env?.SCHEDULE) {
 	printNextRunTime();
 } else {
 	await safeRun();
-	setTimeout(() => process.exit(0), moment.duration(5, 'seconds').asMilliseconds());
+	setTimeout(() => process.exit(process.exitCode ?? 0), moment.duration(5, 'seconds').asMilliseconds());
 }

@@ -4,15 +4,19 @@ services:
     container_name: israeli-banks-actual-budget-importer
     cap_add:
       - SYS_ADMIN
-    platform: linux/amd64
     restart: always
     build:
       context: .
       dockerfile: Dockerfile
     environment:
       - TZ=Asia/Jerusalem
+      - SCRAPE_DAYS=30
+      - TIMEOUT=15
+      - FAILURE_SCREENSHOT_PATH=/app/logs/scraper-failure.png
+      - CONFIG_PATH=/app/config.json
       # - SCHEDULE=0 */6 * * *
     volumes:
-      - ./config.json:/app/config.json
+      - ./config.json:/app/config.json:ro
       - ./cache:/app/cache
       - ./chrome-data:/app/chrome-data
+      - ./logs:/app/logs
