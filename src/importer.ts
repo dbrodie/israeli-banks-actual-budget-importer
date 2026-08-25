@@ -7,11 +7,10 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 
 import process from 'node:process';
-import {createScraper, type ScraperCredentials} from '@tomerh2001/israeli-bank-scrapers';
+import {createScraper, type ScraperCredentials} from 'israeli-bank-scrapers';
 import _ from 'lodash';
 import moment from 'moment';
 import actual from '@actual-app/api';
-import {type ImportTransactionEntity, type PayeeEntity} from '@actual-app/api/@types/loot-core/src/types/models';
 import stdout from 'mute-stdout';
 import {type ScrapeTransactionsContext} from './importer.types.ts';
 import {
@@ -22,6 +21,9 @@ import {
 	reconciliationTargetKey,
 	uniqueReconciliationImportedId,
 } from './importer.utils';
+
+type PayeeEntity = Awaited<ReturnType<typeof actual.getPayees>>[number];
+type ImportTransactionEntity = Parameters<typeof actual.importTransactions>[1][number];
 
 /**
  * Scrapes bank transactions from a financial institution and imports them into Actual Budget.
@@ -42,7 +44,7 @@ import {
  * @throws {Error} When transaction import fails
  *
  * @remarks
- * - Scrapes transactions from the past 2 years
+ * - Scrapes transactions from the past SCRAPE_DAYS days (30 by default)
  * - Automatically creates payees if they don't exist in Actual Budget
  * - Generates stable imported IDs to prevent duplicate imports
  * - Reconciliation transactions are only created when there's a balance difference
@@ -73,20 +75,36 @@ export async function scrapeAndImportTransactions({companyId, bank}: ScrapeTrans
 	}
 
 	try {
+		const dryRun = process.env.DRY_RUN === 'true';
 		const targets = normalizeTargets(bank);
 		if (targets.length === 0) {
 			throw new Error(`No targets configured for ${companyId}. Provide bank.actualAccountId (legacy) or bank.targets[].actualAccountId.`);
 		}
 
+		const timeoutMinutes = Number(process.env.TIMEOUT ?? 15);
+		const scrapeDays = Number(process.env.SCRAPE_DAYS ?? 30);
+		if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) {
+			throw new Error('TIMEOUT must be a positive number of minutes');
+		}
+
+		if (!Number.isInteger(scrapeDays) || scrapeDays <= 0) {
+			throw new Error('SCRAPE_DAYS must be a positive whole number');
+		}
+
+		const browserArgs = ['--user-data-dir=./chrome-data'];
+		if (process.env.CHROME_NO_SANDBOX === 'true') {
+			browserArgs.push('--no-sandbox', '--disable-setuid-sandbox');
+		}
+
 		const scraper = createScraper({
 			companyId,
-			startDate: moment().subtract(2, 'years').toDate(),
-			// ExecutablePath: '/opt/homebrew/bin/chromium',
-			timeout: moment(process.env?.TIMEOUT ?? 15, 'minutes').milliseconds(),
-			args: ['--user-data-dir=./chrome-data'],
+			startDate: moment().subtract(scrapeDays, 'days').startOf('day').toDate(),
+			timeout: moment.duration(timeoutMinutes, 'minutes').asMilliseconds(),
+			args: browserArgs,
 			additionalTransactionInformation: true,
 			verbose: process.env?.VERBOSE === 'true',
 			showBrowser: process.env?.SHOW_BROWSER === 'true',
+			storeFailureScreenShotPath: process.env.FAILURE_SCREENSHOT_PATH,
 		});
 
 		scraper.onProgress((_companyId, payload) => {
@@ -106,11 +124,14 @@ export async function scrapeAndImportTransactions({companyId, bank}: ScrapeTrans
 			})),
 		});
 
-		const payees: PayeeEntity[] = await actual.getPayees();
+		const payees: PayeeEntity[] = dryRun ? [] : await actual.getPayees();
 
 		// Process each target independently.
 		for (const target of targets) {
 			const selectedAccounts = selectScraperAccounts(result.accounts as any[], target.accounts);
+			if (selectedAccounts.length === 0) {
+				throw new Error(`None of the configured source accounts were returned for Actual account ${target.actualAccountId}`);
+			}
 
 			// Pending transactions can still carry provisional amounts or FX values,
 			// so only completed transactions should be imported into the final ledger.
@@ -120,6 +141,16 @@ export async function scrapeAndImportTransactions({companyId, bank}: ScrapeTrans
 				.value();
 			const pendingTransactions = transactions.filter(({txn}) => txn?.status === 'pending');
 			const completedTransactions = transactions.filter(({txn}) => txn?.status !== 'pending');
+
+			if (dryRun) {
+				log('DRY_RUN_TARGET', {
+					actualAccountId: target.actualAccountId,
+					sourceAccounts: selectedAccounts.map(a => String(a.accountNumber)),
+					completedTransactions: completedTransactions.length,
+					pendingTransactions: pendingTransactions.length,
+				});
+				continue;
+			}
 
 			if (pendingTransactions.length > 0) {
 				log('SKIPPED_PENDING_TRANSACTIONS', {
@@ -233,6 +264,7 @@ export async function scrapeAndImportTransactions({companyId, bank}: ScrapeTrans
 		}
 	} catch (error) {
 		console.error('Error', companyId, error);
+		throw error;
 	} finally {
 		log('DONE');
 	}

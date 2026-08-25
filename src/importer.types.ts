@@ -1,4 +1,4 @@
-import type {CompanyTypes} from '@tomerh2001/israeli-bank-scrapers';
+import type {CompanyTypes} from 'israeli-bank-scrapers';
 import type {ConfigBank} from './config.d.ts';
 
 /**
